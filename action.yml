@@ -1,0 +1,24 @@
+name: 'VibeLint'
+description: 'AI Code Audit — catches bugs your AI coding tool introduces'
+author: 'VibeLint'
+branding:
+  icon: 'shield'
+  color: 'purple'
+
+inputs:
+  github-token:
+    description: 'GitHub token for posting PR comments'
+    required: true
+    default: ${{ github.token }}
+  fail-below:
+    description: 'Fail the check if Vibe Score is below this threshold (0-100, 0 to disable)'
+    required: false
+    default: '0'
+  languages:
+    description: 'Languages to check (comma-separated: python,javascript,typescript)'
+    required: false
+    default: 'python,javascript,typescript'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
