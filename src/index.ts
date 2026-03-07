@@ -3,9 +3,10 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { DiffFile, Language, VibeReport, detectLanguage, isTestFile } from './types';
-import { checkHallucinations, parsePackageJson, parsePythonDeps } from './checks/hallucination';
+import { checkHallucinations, parsePackageJson, parsePythonDeps, parsePyprojectToml } from './checks/hallucination';
 import { checkTests } from './checks/empty-tests';
 import { checkRemovedCode } from './checks/removed-code';
+import { checkSuspicious } from './checks/suspicious';
 import { calculateScore, formatReport } from './scoring';
 
 async function run(): Promise<void> {
@@ -39,7 +40,13 @@ async function run(): Promise<void> {
 
     // Fetch dependency files for hallucination checking
     const dependencies = new Set<string>();
-    for (const depFile of ['package.json', 'requirements.txt', 'pyproject.toml']) {
+    const depFileMap: Record<string, (content: string) => Set<string>> = {
+      'package.json': parsePackageJson,
+      'requirements.txt': parsePythonDeps,
+      'pyproject.toml': parsePyprojectToml,
+    };
+
+    for (const [depFile, parser] of Object.entries(depFileMap)) {
       try {
         const { data } = await octokit.rest.repos.getContent({
           owner,
@@ -49,11 +56,7 @@ async function run(): Promise<void> {
         });
         if ('content' in data && data.content) {
           const content = Buffer.from(data.content, 'base64').toString('utf-8');
-          if (depFile === 'package.json') {
-            for (const dep of parsePackageJson(content)) dependencies.add(dep);
-          } else {
-            for (const dep of parsePythonDeps(content)) dependencies.add(dep);
-          }
+          for (const dep of parser(content)) dependencies.add(dep);
         }
       } catch {
         // File doesn't exist — that's fine
@@ -112,6 +115,10 @@ async function run(): Promise<void> {
         allIssues.push(...testResult.issues);
       }
 
+      // Run suspicious patterns check on all files
+      const suspiciousResult = checkSuspicious(diffFile, language);
+      allIssues.push(...suspiciousResult.issues);
+
       // Run removed code check on modified files
       if (file.status === 'modified' && file.patch) {
         const removedResult = checkRemovedCode(diffFile, allFileContents);
@@ -133,7 +140,6 @@ async function run(): Promise<void> {
     core.info(`\n${reportMd}`);
 
     // Post comment on PR
-    // First, check if we already have a VibeLint comment (update instead of spam)
     const { data: comments } = await octokit.rest.issues.listComments({
       owner,
       repo,

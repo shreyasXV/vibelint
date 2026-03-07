@@ -37,17 +37,41 @@ const ISSUE_LABEL: Record<string, string> = {
   'removed-code': 'REMOVED CODE',
 };
 
+const QUICK_FIXES: Record<string, string> = {
+  'hallucination': '💡 **Fix:** Add the package to your dependency file, or remove the import if it was hallucinated.',
+  'empty-test': '💡 **Fix:** Add meaningful assertions that verify the function\'s output.',
+  'tautological-test': '💡 **Fix:** Replace constant assertions with checks on actual function return values.',
+  'disconnected-test': '💡 **Fix:** Assert against the variable that holds the function\'s return value.',
+  'removed-code': '💡 **Fix:** Update all references to the deleted code, or restore it if the deletion was unintentional.',
+};
+
 export function formatReport(report: VibeReport): string {
   const { score, issues, filesChecked } = report;
   const emoji = getScoreEmoji(score);
   const label = getScoreLabel(score);
 
+  const criticalCount = issues.filter(i => i.severity === 'error').length;
+  const warningCount = issues.filter(i => i.severity === 'warning').length;
+  const infoCount = issues.filter(i => i.severity === 'info').length;
+
   let md = `## 🔍 VibeLint — AI Code Audit\n\n`;
   md += `**Vibe Score: ${score}/100** ${emoji} ${label}\n\n`;
-  md += `*Checked ${filesChecked} file${filesChecked !== 1 ? 's' : ''}*\n\n`;
+
+  // Summary table
+  if (issues.length > 0) {
+    md += `| Severity | Count |\n|----------|-------|\n`;
+    if (criticalCount > 0) md += `| 🔴 Critical | ${criticalCount} |\n`;
+    if (warningCount > 0) md += `| 🟡 Warning | ${warningCount} |\n`;
+    if (infoCount > 0) md += `| ℹ️ Info | ${infoCount} |\n`;
+    md += `\n`;
+  }
+
+  md += `*Checked ${filesChecked} file${filesChecked !== 1 ? 's' : ''} • VibeLint v0.1.0*\n\n`;
 
   if (issues.length === 0) {
     md += `> ✨ No AI code smells detected. Your code looks good!\n`;
+    md += `\n---\n`;
+    md += `*[VibeLint](https://github.com/vibelint/vibelint) — Your AI writes code. VibeLint makes sure it works.*\n`;
     return md;
   }
 
@@ -61,21 +85,35 @@ export function formatReport(report: VibeReport): string {
   }
 
   for (const [file, fileIssues] of byFile) {
-    md += `### \`${file}\`\n\n`;
+    const fileEmoji = fileIssues.some(i => i.severity === 'error') ? '🔴' : 
+                      fileIssues.some(i => i.severity === 'warning') ? '🟡' : 'ℹ️';
+    
+    md += `<details>\n<summary>${fileEmoji} <code>${file}</code> — ${fileIssues.length} issue${fileIssues.length !== 1 ? 's' : ''}</summary>\n\n`;
+    
     for (const issue of fileIssues) {
-      const emoji = ISSUE_EMOJI[issue.type] || '⚠️';
-      const label = ISSUE_LABEL[issue.type] || issue.type.toUpperCase();
-      md += `${emoji} **${label}** (line ${issue.line})\n`;
+      const issueEmoji = ISSUE_EMOJI[issue.type] || '⚠️';
+      const issueLabel = ISSUE_LABEL[issue.type] || issue.type.toUpperCase();
+      const severityBadge = issue.severity === 'error' ? '🔴' : 
+                            issue.severity === 'warning' ? '🟡' : 'ℹ️';
+      
+      md += `${issueEmoji} **${issueLabel}** ${severityBadge} (line ${issue.line})\n`;
       md += `${issue.message}\n`;
       if (issue.detail) {
         md += `${issue.detail}\n`;
       }
+      // Add quick fix suggestion
+      const quickFix = QUICK_FIXES[issue.type];
+      if (quickFix) {
+        md += `${quickFix}\n`;
+      }
       md += `\n`;
     }
+    
+    md += `</details>\n\n`;
   }
 
   md += `---\n`;
-  md += `*[VibeLint](https://github.com/vibelint/vibelint) — Your AI writes code. VibeLint makes sure it works.*\n`;
+  md += `*[VibeLint](https://github.com/vibelint/vibelint) — Your AI writes code. VibeLint makes sure it works. • v0.1.0*\n`;
 
   return md;
 }

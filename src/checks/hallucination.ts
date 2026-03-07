@@ -149,17 +149,30 @@ export function checkHallucinations(
     if (imp.module.startsWith('.') || imp.module.startsWith('/')) continue;
 
     // Check against declared dependencies
-    if (!dependencies.has(imp.module)) {
-      issues.push({
-        type: 'hallucination',
-        severity: 'error',
-        file: file.filename,
-        line: imp.line,
-        message: `Package '${imp.module}' not found in dependencies`,
-        detail: `\`${imp.raw}\`\n→ '${imp.module}' is not listed in your ${language === 'python' ? 'requirements.txt / pyproject.toml' : 'package.json'}. This may be a hallucinated import.`,
-        penalty: 15,
+    // Normalize module name for Python (replace - with _)
+    const normalizedModule = language === 'python' ? imp.module.toLowerCase().replace(/-/g, '_') : imp.module;
+    
+    // Check direct match
+    if (dependencies.has(normalizedModule) || dependencies.has(imp.module)) continue;
+    
+    // Check namespace packages (e.g., google.cloud -> google-cloud-*)
+    if (language === 'python') {
+      const isNamespace = Array.from(dependencies).some(dep => {
+        const depNorm = dep.replace(/-/g, '_');
+        return depNorm.startsWith(normalizedModule) || normalizedModule.startsWith(depNorm);
       });
+      if (isNamespace) continue;
     }
+
+    issues.push({
+      type: 'hallucination',
+      severity: 'error',
+      file: file.filename,
+      line: imp.line,
+      message: `Package '${imp.module}' not found in dependencies`,
+      detail: `\`${imp.raw}\`\n→ '${imp.module}' is not listed in your ${language === 'python' ? 'requirements.txt / pyproject.toml' : 'package.json'}. This may be a hallucinated import.`,
+      penalty: 15,
+    });
   }
 
   return { issues };
@@ -176,6 +189,59 @@ export function parsePythonDeps(content: string): Set<string> {
       deps.add(match[1].toLowerCase().replace(/-/g, '_'));
     }
   }
+  return deps;
+}
+
+export function parsePyprojectToml(content: string): Set<string> {
+  const deps = new Set<string>();
+  // Simple TOML parser for [project.dependencies] and [tool.poetry.dependencies]
+  const lines = content.split('\n');
+  let inDeps = false;
+  
+  for (const line of lines) {
+    const trimmed = line.trim();
+    
+    // Check for dependency sections
+    if (trimmed === '[project]' || trimmed === '[tool.poetry.dependencies]') {
+      // Not directly in deps yet for [project], need to find dependencies key
+    }
+    
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      inDeps = false;
+      if (trimmed === '[tool.poetry.dependencies]') {
+        inDeps = true;
+      }
+      continue;
+    }
+    
+    // Handle [project] dependencies = [...] format
+    if (trimmed.startsWith('dependencies') && trimmed.includes('=')) {
+      inDeps = true;
+      // Handle inline array: dependencies = ["numpy>=1.0", "pandas"]
+      const arrayMatch = trimmed.match(/\[([^\]]*)\]/);
+      if (arrayMatch) {
+        const items = arrayMatch[1].split(',');
+        for (const item of items) {
+          const cleaned = item.trim().replace(/['"]/g, '');
+          const match = cleaned.match(/^([a-zA-Z0-9_-]+)/);
+          if (match) deps.add(match[1].toLowerCase().replace(/-/g, '_'));
+        }
+        if (!trimmed.endsWith(',')) inDeps = false;
+      }
+      continue;
+    }
+    
+    if (inDeps) {
+      // Handle items in multi-line array or TOML table
+      const cleaned = trimmed.replace(/['"]/g, '').replace(/,\s*$/, '');
+      if (cleaned === ']') { inDeps = false; continue; }
+      const match = cleaned.match(/^([a-zA-Z0-9_-]+)/);
+      if (match && match[1] !== '#') {
+        deps.add(match[1].toLowerCase().replace(/-/g, '_'));
+      }
+    }
+  }
+  
   return deps;
 }
 

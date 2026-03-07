@@ -30169,6 +30169,7 @@ exports.extractPythonImports = extractPythonImports;
 exports.extractJSImports = extractJSImports;
 exports.checkHallucinations = checkHallucinations;
 exports.parsePythonDeps = parsePythonDeps;
+exports.parsePyprojectToml = parsePyprojectToml;
 exports.parsePackageJson = parsePackageJson;
 // Python stdlib modules (common ones — not exhaustive but covers 95%)
 const PYTHON_STDLIB = new Set([
@@ -30290,17 +30291,29 @@ function checkHallucinations(file, language, dependencies) {
         if (imp.module.startsWith('.') || imp.module.startsWith('/'))
             continue;
         // Check against declared dependencies
-        if (!dependencies.has(imp.module)) {
-            issues.push({
-                type: 'hallucination',
-                severity: 'error',
-                file: file.filename,
-                line: imp.line,
-                message: `Package '${imp.module}' not found in dependencies`,
-                detail: `\`${imp.raw}\`\n→ '${imp.module}' is not listed in your ${language === 'python' ? 'requirements.txt / pyproject.toml' : 'package.json'}. This may be a hallucinated import.`,
-                penalty: 15,
+        // Normalize module name for Python (replace - with _)
+        const normalizedModule = language === 'python' ? imp.module.toLowerCase().replace(/-/g, '_') : imp.module;
+        // Check direct match
+        if (dependencies.has(normalizedModule) || dependencies.has(imp.module))
+            continue;
+        // Check namespace packages (e.g., google.cloud -> google-cloud-*)
+        if (language === 'python') {
+            const isNamespace = Array.from(dependencies).some(dep => {
+                const depNorm = dep.replace(/-/g, '_');
+                return depNorm.startsWith(normalizedModule) || normalizedModule.startsWith(depNorm);
             });
+            if (isNamespace)
+                continue;
         }
+        issues.push({
+            type: 'hallucination',
+            severity: 'error',
+            file: file.filename,
+            line: imp.line,
+            message: `Package '${imp.module}' not found in dependencies`,
+            detail: `\`${imp.raw}\`\n→ '${imp.module}' is not listed in your ${language === 'python' ? 'requirements.txt / pyproject.toml' : 'package.json'}. This may be a hallucinated import.`,
+            penalty: 15,
+        });
     }
     return { issues };
 }
@@ -30314,6 +30327,57 @@ function parsePythonDeps(content) {
         const match = trimmed.match(/^([a-zA-Z0-9_-]+)/);
         if (match) {
             deps.add(match[1].toLowerCase().replace(/-/g, '_'));
+        }
+    }
+    return deps;
+}
+function parsePyprojectToml(content) {
+    const deps = new Set();
+    // Simple TOML parser for [project.dependencies] and [tool.poetry.dependencies]
+    const lines = content.split('\n');
+    let inDeps = false;
+    for (const line of lines) {
+        const trimmed = line.trim();
+        // Check for dependency sections
+        if (trimmed === '[project]' || trimmed === '[tool.poetry.dependencies]') {
+            // Not directly in deps yet for [project], need to find dependencies key
+        }
+        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+            inDeps = false;
+            if (trimmed === '[tool.poetry.dependencies]') {
+                inDeps = true;
+            }
+            continue;
+        }
+        // Handle [project] dependencies = [...] format
+        if (trimmed.startsWith('dependencies') && trimmed.includes('=')) {
+            inDeps = true;
+            // Handle inline array: dependencies = ["numpy>=1.0", "pandas"]
+            const arrayMatch = trimmed.match(/\[([^\]]*)\]/);
+            if (arrayMatch) {
+                const items = arrayMatch[1].split(',');
+                for (const item of items) {
+                    const cleaned = item.trim().replace(/['"]/g, '');
+                    const match = cleaned.match(/^([a-zA-Z0-9_-]+)/);
+                    if (match)
+                        deps.add(match[1].toLowerCase().replace(/-/g, '_'));
+                }
+                if (!trimmed.endsWith(','))
+                    inDeps = false;
+            }
+            continue;
+        }
+        if (inDeps) {
+            // Handle items in multi-line array or TOML table
+            const cleaned = trimmed.replace(/['"]/g, '').replace(/,\s*$/, '');
+            if (cleaned === ']') {
+                inDeps = false;
+                continue;
+            }
+            const match = cleaned.match(/^([a-zA-Z0-9_-]+)/);
+            if (match && match[1] !== '#') {
+                deps.add(match[1].toLowerCase().replace(/-/g, '_'));
+            }
         }
     }
     return deps;
@@ -30476,6 +30540,172 @@ function escapeRegex(str) {
 
 /***/ }),
 
+/***/ 1750:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+// VibeLint — Suspicious Patterns Detector
+// Detects AI-generated code smells: TODOs, hardcoded secrets, empty catches, console.logs
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.checkSuspicious = checkSuspicious;
+// Hardcoded secret patterns
+const SECRET_PATTERNS = [
+    { regex: /(?:api[_-]?key|apikey)\s*[:=]\s*['"][^'"]{8,}['"]/i, label: 'API Key' },
+    { regex: /(?:secret|password|passwd|pwd)\s*[:=]\s*['"][^'"]{4,}['"]/i, label: 'Password/Secret' },
+    { regex: /(?:token|auth[_-]?token|access[_-]?token)\s*[:=]\s*['"][^'"]{8,}['"]/i, label: 'Token' },
+    { regex: /(?:private[_-]?key)\s*[:=]\s*['"][^'"]{8,}['"]/i, label: 'Private Key' },
+    { regex: /(?:aws[_-]?secret|aws[_-]?key)\s*[:=]\s*['"][A-Za-z0-9/+=]{20,}['"]/i, label: 'AWS Credential' },
+    { regex: /(?:Bearer\s+)[A-Za-z0-9._-]{20,}/i, label: 'Bearer Token' },
+    { regex: /ghp_[A-Za-z0-9]{36}/, label: 'GitHub PAT' },
+    { regex: /sk-[A-Za-z0-9]{20,}/, label: 'OpenAI API Key' },
+    { regex: /xox[bps]-[A-Za-z0-9-]{10,}/, label: 'Slack Token' },
+];
+// TODO/FIXME patterns
+const TODO_PATTERNS = [
+    /\b(TODO|FIXME|HACK|XXX|TEMP|TEMPORARY)\b\s*[:.]?\s*/i,
+];
+// Empty catch patterns
+const EMPTY_CATCH_PYTHON = [
+    /except\s*(?:\w+\s*)?:\s*$/, // except: or except Exception:
+    /except\s*(?:\w+\s*)?:\s*pass\s*$/, // except: pass
+    /except\s*(?:\w+\s*)?:\s*\.{3}\s*$/, // except: ...
+];
+const EMPTY_CATCH_JS = [
+    /catch\s*\([^)]*\)\s*\{\s*\}/, // catch(e) {}
+    /catch\s*\([^)]*\)\s*\{\s*\/\//, // catch(e) { // ignore
+    /\.catch\s*\(\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)/, // .catch(() => {})
+];
+// Console.log left in code
+const CONSOLE_LOG_PATTERNS = [
+    /console\.(log|debug|info)\s*\(/,
+    /print\s*\(\s*f?['"]debug/i,
+    /System\.out\.println/,
+];
+function checkSuspicious(file, language) {
+    const issues = [];
+    const content = file.content || '';
+    const patch = file.patch || '';
+    if (!content && !patch)
+        return { issues };
+    // We only check ADDED lines from the diff if available, otherwise full content
+    const linesToCheck = [];
+    if (patch) {
+        const patchLines = patch.split('\n');
+        let currentLine = 0;
+        for (const line of patchLines) {
+            const hunkMatch = line.match(/^@@\s*-\d+(?:,\d+)?\s*\+(\d+)/);
+            if (hunkMatch) {
+                currentLine = parseInt(hunkMatch[1], 10);
+                continue;
+            }
+            if (line.startsWith('+') && !line.startsWith('+++')) {
+                linesToCheck.push({ text: line.slice(1), lineNum: currentLine });
+                currentLine++;
+            }
+            else if (!line.startsWith('-')) {
+                currentLine++;
+            }
+        }
+    }
+    else {
+        content.split('\n').forEach((text, i) => {
+            linesToCheck.push({ text, lineNum: i + 1 });
+        });
+    }
+    for (const { text, lineNum } of linesToCheck) {
+        const trimmed = text.trim();
+        // Skip empty lines and pure comments that are just file headers
+        if (!trimmed)
+            continue;
+        // Check for hardcoded secrets
+        for (const pattern of SECRET_PATTERNS) {
+            if (pattern.regex.test(trimmed)) {
+                // Skip if it looks like an example/placeholder
+                if (/(?:example|placeholder|xxx|your[_-]|changeme|replace)/i.test(trimmed))
+                    continue;
+                // Skip test files
+                if (file.filename.includes('test') || file.filename.includes('spec'))
+                    continue;
+                // Skip .env.example files
+                if (file.filename.includes('.example') || file.filename.includes('.sample'))
+                    continue;
+                issues.push({
+                    type: 'hallucination', // reuse type for now, will add 'secret' type
+                    severity: 'error',
+                    file: file.filename,
+                    line: lineNum,
+                    message: `Possible hardcoded ${pattern.label} detected`,
+                    detail: `Line contains what appears to be a hardcoded ${pattern.label}. Consider using environment variables instead.`,
+                    penalty: 15,
+                });
+                break; // One match per line is enough
+            }
+        }
+        // Check for TODO/FIXME in new code
+        for (const pattern of TODO_PATTERNS) {
+            if (pattern.test(trimmed)) {
+                // Only flag if it's in a comment
+                const isComment = trimmed.startsWith('#') || trimmed.startsWith('//') ||
+                    trimmed.startsWith('*') || trimmed.startsWith('/*');
+                if (isComment || /\/\/.*\b(TODO|FIXME|HACK|XXX)\b/i.test(trimmed) ||
+                    /#.*\b(TODO|FIXME|HACK|XXX)\b/i.test(trimmed)) {
+                    issues.push({
+                        type: 'empty-test', // reuse for now
+                        severity: 'info',
+                        file: file.filename,
+                        line: lineNum,
+                        message: 'TODO/FIXME comment in new code',
+                        detail: `\`${trimmed.slice(0, 80)}\`\n→ AI-generated code often includes placeholder TODOs. Consider resolving before merging.`,
+                        penalty: 3,
+                    });
+                }
+                break;
+            }
+        }
+        // Check for empty catch blocks
+        const catchPatterns = language === 'python' ? EMPTY_CATCH_PYTHON : EMPTY_CATCH_JS;
+        for (const pattern of catchPatterns) {
+            if (pattern.test(trimmed)) {
+                issues.push({
+                    type: 'removed-code', // reuse for now
+                    severity: 'warning',
+                    file: file.filename,
+                    line: lineNum,
+                    message: 'Empty error handler — errors are silently swallowed',
+                    detail: `\`${trimmed.slice(0, 80)}\`\n→ Silently catching errors hides bugs. At minimum, log the error.`,
+                    penalty: 10,
+                });
+                break;
+            }
+        }
+        // Check for console.log/print debug left in code
+        if (!file.filename.includes('test') && !file.filename.includes('spec')) {
+            for (const pattern of CONSOLE_LOG_PATTERNS) {
+                if (pattern.test(trimmed)) {
+                    // Skip if it's in a logging utility file
+                    if (file.filename.includes('log') || file.filename.includes('debug'))
+                        continue;
+                    issues.push({
+                        type: 'empty-test',
+                        severity: 'info',
+                        file: file.filename,
+                        line: lineNum,
+                        message: 'Debug logging left in code',
+                        detail: `\`${trimmed.slice(0, 80)}\`\n→ Consider removing debug output before merging.`,
+                        penalty: 2,
+                    });
+                    break;
+                }
+            }
+        }
+    }
+    return { issues };
+}
+
+
+/***/ }),
+
 /***/ 9407:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -30522,6 +30752,7 @@ const types_1 = __nccwpck_require__(8522);
 const hallucination_1 = __nccwpck_require__(9264);
 const empty_tests_1 = __nccwpck_require__(5540);
 const removed_code_1 = __nccwpck_require__(1839);
+const suspicious_1 = __nccwpck_require__(1750);
 const scoring_1 = __nccwpck_require__(5034);
 async function run() {
     try {
@@ -30548,7 +30779,12 @@ async function run() {
         });
         // Fetch dependency files for hallucination checking
         const dependencies = new Set();
-        for (const depFile of ['package.json', 'requirements.txt', 'pyproject.toml']) {
+        const depFileMap = {
+            'package.json': hallucination_1.parsePackageJson,
+            'requirements.txt': hallucination_1.parsePythonDeps,
+            'pyproject.toml': hallucination_1.parsePyprojectToml,
+        };
+        for (const [depFile, parser] of Object.entries(depFileMap)) {
             try {
                 const { data } = await octokit.rest.repos.getContent({
                     owner,
@@ -30558,14 +30794,8 @@ async function run() {
                 });
                 if ('content' in data && data.content) {
                     const content = Buffer.from(data.content, 'base64').toString('utf-8');
-                    if (depFile === 'package.json') {
-                        for (const dep of (0, hallucination_1.parsePackageJson)(content))
-                            dependencies.add(dep);
-                    }
-                    else {
-                        for (const dep of (0, hallucination_1.parsePythonDeps)(content))
-                            dependencies.add(dep);
-                    }
+                    for (const dep of parser(content))
+                        dependencies.add(dep);
                 }
             }
             catch {
@@ -30618,6 +30848,9 @@ async function run() {
                 const testResult = (0, empty_tests_1.checkTests)(diffFile, language);
                 allIssues.push(...testResult.issues);
             }
+            // Run suspicious patterns check on all files
+            const suspiciousResult = (0, suspicious_1.checkSuspicious)(diffFile, language);
+            allIssues.push(...suspiciousResult.issues);
             // Run removed code check on modified files
             if (file.status === 'modified' && file.patch) {
                 const removedResult = (0, removed_code_1.checkRemovedCode)(diffFile, allFileContents);
@@ -30635,7 +30868,6 @@ async function run() {
         const reportMd = (0, scoring_1.formatReport)(report);
         core.info(`\n${reportMd}`);
         // Post comment on PR
-        // First, check if we already have a VibeLint comment (update instead of spam)
         const { data: comments } = await octokit.rest.issues.listComments({
             owner,
             repo,
@@ -30730,15 +30962,38 @@ const ISSUE_LABEL = {
     'disconnected-test': 'DISCONNECTED TEST',
     'removed-code': 'REMOVED CODE',
 };
+const QUICK_FIXES = {
+    'hallucination': '💡 **Fix:** Add the package to your dependency file, or remove the import if it was hallucinated.',
+    'empty-test': '💡 **Fix:** Add meaningful assertions that verify the function\'s output.',
+    'tautological-test': '💡 **Fix:** Replace constant assertions with checks on actual function return values.',
+    'disconnected-test': '💡 **Fix:** Assert against the variable that holds the function\'s return value.',
+    'removed-code': '💡 **Fix:** Update all references to the deleted code, or restore it if the deletion was unintentional.',
+};
 function formatReport(report) {
     const { score, issues, filesChecked } = report;
     const emoji = getScoreEmoji(score);
     const label = getScoreLabel(score);
+    const criticalCount = issues.filter(i => i.severity === 'error').length;
+    const warningCount = issues.filter(i => i.severity === 'warning').length;
+    const infoCount = issues.filter(i => i.severity === 'info').length;
     let md = `## 🔍 VibeLint — AI Code Audit\n\n`;
     md += `**Vibe Score: ${score}/100** ${emoji} ${label}\n\n`;
-    md += `*Checked ${filesChecked} file${filesChecked !== 1 ? 's' : ''}*\n\n`;
+    // Summary table
+    if (issues.length > 0) {
+        md += `| Severity | Count |\n|----------|-------|\n`;
+        if (criticalCount > 0)
+            md += `| 🔴 Critical | ${criticalCount} |\n`;
+        if (warningCount > 0)
+            md += `| 🟡 Warning | ${warningCount} |\n`;
+        if (infoCount > 0)
+            md += `| ℹ️ Info | ${infoCount} |\n`;
+        md += `\n`;
+    }
+    md += `*Checked ${filesChecked} file${filesChecked !== 1 ? 's' : ''} • VibeLint v0.1.0*\n\n`;
     if (issues.length === 0) {
         md += `> ✨ No AI code smells detected. Your code looks good!\n`;
+        md += `\n---\n`;
+        md += `*[VibeLint](https://github.com/vibelint/vibelint) — Your AI writes code. VibeLint makes sure it works.*\n`;
         return md;
     }
     md += `Found **${issues.length} issue${issues.length !== 1 ? 's' : ''}**:\n\n`;
@@ -30750,20 +31005,30 @@ function formatReport(report) {
         byFile.get(issue.file).push(issue);
     }
     for (const [file, fileIssues] of byFile) {
-        md += `### \`${file}\`\n\n`;
+        const fileEmoji = fileIssues.some(i => i.severity === 'error') ? '🔴' :
+            fileIssues.some(i => i.severity === 'warning') ? '🟡' : 'ℹ️';
+        md += `<details>\n<summary>${fileEmoji} <code>${file}</code> — ${fileIssues.length} issue${fileIssues.length !== 1 ? 's' : ''}</summary>\n\n`;
         for (const issue of fileIssues) {
-            const emoji = ISSUE_EMOJI[issue.type] || '⚠️';
-            const label = ISSUE_LABEL[issue.type] || issue.type.toUpperCase();
-            md += `${emoji} **${label}** (line ${issue.line})\n`;
+            const issueEmoji = ISSUE_EMOJI[issue.type] || '⚠️';
+            const issueLabel = ISSUE_LABEL[issue.type] || issue.type.toUpperCase();
+            const severityBadge = issue.severity === 'error' ? '🔴' :
+                issue.severity === 'warning' ? '🟡' : 'ℹ️';
+            md += `${issueEmoji} **${issueLabel}** ${severityBadge} (line ${issue.line})\n`;
             md += `${issue.message}\n`;
             if (issue.detail) {
                 md += `${issue.detail}\n`;
             }
+            // Add quick fix suggestion
+            const quickFix = QUICK_FIXES[issue.type];
+            if (quickFix) {
+                md += `${quickFix}\n`;
+            }
             md += `\n`;
         }
+        md += `</details>\n\n`;
     }
     md += `---\n`;
-    md += `*[VibeLint](https://github.com/vibelint/vibelint) — Your AI writes code. VibeLint makes sure it works.*\n`;
+    md += `*[VibeLint](https://github.com/vibelint/vibelint) — Your AI writes code. VibeLint makes sure it works. • v0.1.0*\n`;
     return md;
 }
 
