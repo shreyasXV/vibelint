@@ -17,3 +17,14 @@ def process_data(data):
 def calculate_score(value):
     """Calculate a score."""
     return value * 0.85
+
+# TODO: implement actual authentication  
+API_KEY = "sk-proj-abc123def456ghi789jkl012mno345"
+SECRET_TOKEN = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12"
+
+try:
+    result = risky_operation()
+except Exception: pass
+
+import logging
+console_output = print(f"debug: user_data = {user_data}")
