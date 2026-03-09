@@ -27,6 +27,8 @@ const ISSUE_EMOJI: Record<string, string> = {
   'tautological-test': '🧪',
   'disconnected-test': '🔌',
   'removed-code': '🗑️',
+  'suspicious': '⚠️',
+  'custom': '🔎',
 };
 
 const ISSUE_LABEL: Record<string, string> = {
@@ -35,14 +37,8 @@ const ISSUE_LABEL: Record<string, string> = {
   'tautological-test': 'TAUTOLOGICAL TEST',
   'disconnected-test': 'DISCONNECTED TEST',
   'removed-code': 'REMOVED CODE',
-};
-
-const QUICK_FIXES: Record<string, string> = {
-  'hallucination': '💡 **Fix:** Add the package to your dependency file, or remove the import if it was hallucinated.',
-  'empty-test': '💡 **Fix:** Add meaningful assertions that verify the function\'s output.',
-  'tautological-test': '💡 **Fix:** Replace constant assertions with checks on actual function return values.',
-  'disconnected-test': '💡 **Fix:** Assert against the variable that holds the function\'s return value.',
-  'removed-code': '💡 **Fix:** Update all references to the deleted code, or restore it if the deletion was unintentional.',
+  'suspicious': 'SUSPICIOUS PATTERN',
+  'custom': 'CUSTOM RULE',
 };
 
 export function formatReport(report: VibeReport): string {
@@ -66,12 +62,12 @@ export function formatReport(report: VibeReport): string {
     md += `\n`;
   }
 
-  md += `*Checked ${filesChecked} file${filesChecked !== 1 ? 's' : ''} • VibeLint v0.1.0*\n\n`;
+  md += `*Checked ${filesChecked} file${filesChecked !== 1 ? 's' : ''} • VibeLint v0.2.0*\n\n`;
 
   if (issues.length === 0) {
     md += `> ✨ No AI code smells detected. Your code looks good!\n`;
     md += `\n---\n`;
-    md += `*[VibeLint](https://github.com/vibelint/vibelint) — Your AI writes code. VibeLint makes sure it works.*\n`;
+    md += `*[VibeLint](https://github.com/shreyasXV/vibelint) — Your AI writes code. VibeLint makes sure it works.*\n`;
     return md;
   }
 
@@ -85,35 +81,34 @@ export function formatReport(report: VibeReport): string {
   }
 
   for (const [file, fileIssues] of byFile) {
-    const fileEmoji = fileIssues.some(i => i.severity === 'error') ? '🔴' : 
+    const fileEmoji = fileIssues.some(i => i.severity === 'error') ? '🔴' :
                       fileIssues.some(i => i.severity === 'warning') ? '🟡' : 'ℹ️';
-    
+
     md += `<details>\n<summary>${fileEmoji} <code>${file}</code> — ${fileIssues.length} issue${fileIssues.length !== 1 ? 's' : ''}</summary>\n\n`;
-    
+
     for (const issue of fileIssues) {
       const issueEmoji = ISSUE_EMOJI[issue.type] || '⚠️';
       const issueLabel = ISSUE_LABEL[issue.type] || issue.type.toUpperCase();
-      const severityBadge = issue.severity === 'error' ? '🔴' : 
+      const severityBadge = issue.severity === 'error' ? '🔴' :
                             issue.severity === 'warning' ? '🟡' : 'ℹ️';
-      
+
       md += `${issueEmoji} **${issueLabel}** ${severityBadge} (line ${issue.line})\n`;
       md += `${issue.message}\n`;
       if (issue.detail) {
         md += `${issue.detail}\n`;
       }
-      // Add quick fix suggestion
-      const quickFix = QUICK_FIXES[issue.type];
-      if (quickFix) {
-        md += `${quickFix}\n`;
+      // v0.2.0: Show inline suggestion if available
+      if (issue.suggestion) {
+        md += `💡 **Suggestion:** ${issue.suggestion}\n`;
       }
       md += `\n`;
     }
-    
+
     md += `</details>\n\n`;
   }
 
   md += `---\n`;
-  md += `*[VibeLint](https://github.com/vibelint/vibelint) — Your AI writes code. VibeLint makes sure it works. • v0.1.0*\n`;
+  md += `*[VibeLint](https://github.com/shreyasXV/vibelint) — Your AI writes code. VibeLint makes sure it works. • v0.2.0*\n`;
 
   return md;
 }

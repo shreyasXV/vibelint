@@ -15,9 +15,13 @@ inputs:
     required: false
     default: '0'
   languages:
-    description: 'Languages to check (comma-separated: python,javascript,typescript)'
+    description: 'Languages to check (comma-separated: python,javascript,typescript,go,rust)'
     required: false
-    default: 'python,javascript,typescript'
+    default: 'python,javascript,typescript,go,rust'
+  config:
+    description: 'Path to VibeLint config file (default: .vibelint.yml)'
+    required: false
+    default: '.vibelint.yml'
 
 runs:
   using: 'node20'

@@ -1,7 +1,7 @@
 // VibeLint — Removed Code Detector
 // Flags deleted functions/classes that are still referenced elsewhere
 
-import { CheckResult, Issue, DiffFile } from '../types';
+import { CheckResult, Issue, DiffFile, VibeLintConfig } from '../types';
 
 interface DeletedSymbol {
   name: string;
@@ -84,6 +84,28 @@ export function extractDeletedSymbols(file: DiffFile): DeletedSymbol[] {
         });
       }
 
+      // Go: func FunctionName(
+      const goFunc = content.match(/^func\s+(\w+)\s*\(/);
+      if (goFunc) {
+        symbols.push({
+          name: goFunc[1],
+          type: 'function',
+          file: file.filename,
+          line: currentLine,
+        });
+      }
+
+      // Rust: fn function_name(
+      const rustFunc = content.match(/(?:pub\s+)?fn\s+(\w+)\s*\(/);
+      if (rustFunc) {
+        symbols.push({
+          name: rustFunc[1],
+          type: 'function',
+          file: file.filename,
+          line: currentLine,
+        });
+      }
+
       currentLine++;
     } else if (!line.startsWith('+')) {
       currentLine++;
@@ -96,16 +118,22 @@ export function extractDeletedSymbols(file: DiffFile): DeletedSymbol[] {
 // Check if deleted symbols are referenced in other files
 export function checkRemovedCode(
   deletedFile: DiffFile,
-  allFileContents: Map<string, string>  // filename -> content (rest of codebase)
+  allFileContents: Map<string, string>,  // filename -> content (rest of codebase)
+  config?: VibeLintConfig
 ): CheckResult {
   const issues: Issue[] = [];
+
+  // Determine severity from config
+  const severity = config?.rules?.['removed-code'] ?? 'error';
+  if (severity === 'off') return { issues };
+
   const deletedSymbols = extractDeletedSymbols(deletedFile);
 
   for (const symbol of deletedSymbols) {
     // Skip private/dunder methods
     if (symbol.name.startsWith('_') && symbol.type === 'function') continue;
     // Skip very common names that would false-positive
-    if (['setup', 'teardown', 'main', 'init', 'run', 'test'].includes(symbol.name.toLowerCase())) continue;
+    if (['setup', 'teardown', 'main', 'init', 'run', 'test', 'new', 'drop'].includes(symbol.name.toLowerCase())) continue;
 
     const references: { file: string; line: number }[] = [];
 
@@ -133,12 +161,13 @@ export function checkRemovedCode(
 
       issues.push({
         type: 'removed-code',
-        severity: 'error',
+        severity: severity as 'error' | 'warning' | 'info',
         file: deletedFile.filename,
         line: symbol.line,
         message: `Deleted ${symbol.type} '${symbol.name}' is still referenced`,
         detail: `\`${symbol.name}\` was removed but is still used in: ${refList}${moreCount}`,
-        penalty: 20,
+        penalty: severity === 'error' ? 20 : severity === 'warning' ? 10 : 3,
+        suggestion: `Update all call sites to use the replacement, or restore \`${symbol.name}\` if the deletion was unintentional. References: ${refList}${moreCount}`,
       });
     }
   }

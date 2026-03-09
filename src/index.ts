@@ -2,18 +2,21 @@
 
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { DiffFile, Language, VibeReport, detectLanguage, isTestFile } from './types';
-import { checkHallucinations, parsePackageJson, parsePythonDeps, parsePyprojectToml } from './checks/hallucination';
+import * as fs from 'fs';
+import { DiffFile, Language, VibeReport, VibeLintConfig, detectLanguage, isTestFile, isIgnored } from './types';
+import { checkHallucinations, parsePackageJson, parsePythonDeps, parsePyprojectToml, parseGoMod, parseCargoToml } from './checks/hallucination';
 import { checkTests } from './checks/empty-tests';
 import { checkRemovedCode } from './checks/removed-code';
 import { checkSuspicious } from './checks/suspicious';
 import { calculateScore, formatReport } from './scoring';
+import { loadConfig, loadConfigFromContent } from './config';
 
 async function run(): Promise<void> {
   try {
     const token = core.getInput('github-token', { required: true });
-    const failBelow = parseInt(core.getInput('fail-below') || '0', 10);
-    const languagesInput = core.getInput('languages') || 'python,javascript,typescript';
+    const failBelowInput = core.getInput('fail-below') || '0';
+    const languagesInput = core.getInput('languages') || 'python,javascript,typescript,go,rust';
+    const configPath = core.getInput('config') || '.vibelint.yml';
     const enabledLanguages = new Set(languagesInput.split(',').map(l => l.trim().toLowerCase()));
 
     const octokit = github.getOctokit(token);
@@ -27,8 +30,38 @@ async function run(): Promise<void> {
     const owner = context.repo.owner;
     const repo = context.repo.repo;
     const pullNumber = context.payload.pull_request.number;
+    const headSha = context.payload.pull_request.head.sha;
 
     core.info(`🔍 VibeLint scanning PR #${pullNumber}...`);
+
+    // v0.2.0: Load config from repo (try fetching from GitHub first, fall back to local)
+    let config: VibeLintConfig = {};
+    try {
+      const { data } = await octokit.rest.repos.getContent({
+        owner,
+        repo,
+        path: configPath,
+        ref: headSha,
+      });
+      if ('content' in data && data.content) {
+        const content = Buffer.from(data.content, 'base64').toString('utf-8');
+        config = loadConfigFromContent(content);
+        core.info(`📋 Loaded VibeLint config from ${configPath}`);
+      }
+    } catch {
+      // Config file doesn't exist — use defaults (backward compatible)
+      // Also try local filesystem (for testing)
+      if (fs.existsSync(configPath)) {
+        config = loadConfig(configPath);
+        core.info(`📋 Loaded VibeLint config from local ${configPath}`);
+      } else {
+        core.info(`📋 No ${configPath} found — using defaults`);
+      }
+    }
+
+    // Config can override fail-below
+    const failBelow = config['fail-below'] ?? parseInt(failBelowInput, 10);
+    const ignorePatterns = config.ignore || [];
 
     // Get PR files
     const { data: files } = await octokit.rest.pulls.listFiles({
@@ -44,6 +77,8 @@ async function run(): Promise<void> {
       'package.json': parsePackageJson,
       'requirements.txt': parsePythonDeps,
       'pyproject.toml': parsePyprojectToml,
+      'go.mod': parseGoMod,
+      'Cargo.toml': parseCargoToml,
     };
 
     for (const [depFile, parser] of Object.entries(depFileMap)) {
@@ -52,7 +87,7 @@ async function run(): Promise<void> {
           owner,
           repo,
           path: depFile,
-          ref: context.payload.pull_request.head.sha,
+          ref: headSha,
         });
         if ('content' in data && data.content) {
           const content = Buffer.from(data.content, 'base64').toString('utf-8');
@@ -71,6 +106,12 @@ async function run(): Promise<void> {
     const allFileContents = new Map<string, string>();
 
     for (const file of files) {
+      // v0.2.0: Check ignore patterns
+      if (ignorePatterns.length > 0 && isIgnored(file.filename, ignorePatterns)) {
+        core.info(`⏭️  Skipping ${file.filename} (matches ignore pattern)`);
+        continue;
+      }
+
       const language = detectLanguage(file.filename);
       if (!language || !enabledLanguages.has(language)) continue;
       if (file.status === 'removed') continue;
@@ -84,7 +125,7 @@ async function run(): Promise<void> {
           owner,
           repo,
           path: file.filename,
-          ref: context.payload.pull_request.head.sha,
+          ref: headSha,
         });
         if ('content' in data && data.content) {
           content = Buffer.from(data.content, 'base64').toString('utf-8');
@@ -106,22 +147,22 @@ async function run(): Promise<void> {
       };
 
       // Run hallucination check on all files
-      const hallResult = checkHallucinations(diffFile, language, dependencies);
+      const hallResult = checkHallucinations(diffFile, language, dependencies, config);
       allIssues.push(...hallResult.issues);
 
       // Run test checks on test files only
       if (isTestFile(file.filename)) {
-        const testResult = checkTests(diffFile, language);
+        const testResult = checkTests(diffFile, language, config);
         allIssues.push(...testResult.issues);
       }
 
       // Run suspicious patterns check on all files
-      const suspiciousResult = checkSuspicious(diffFile, language);
+      const suspiciousResult = checkSuspicious(diffFile, language, config);
       allIssues.push(...suspiciousResult.issues);
 
       // Run removed code check on modified files
       if (file.status === 'modified' && file.patch) {
-        const removedResult = checkRemovedCode(diffFile, allFileContents);
+        const removedResult = checkRemovedCode(diffFile, allFileContents, config);
         allIssues.push(...removedResult.issues);
       }
     }
@@ -169,6 +210,9 @@ async function run(): Promise<void> {
       core.info(`📝 Posted VibeLint comment on PR #${pullNumber}`);
     }
 
+    // v0.2.0: Post inline check run annotations
+    await postCheckRunAnnotations(octokit, owner, repo, headSha, pullNumber, allIssues, score);
+
     // Set outputs
     core.setOutput('score', score.toString());
     core.setOutput('issues', allIssues.length.toString());
@@ -184,6 +228,84 @@ async function run(): Promise<void> {
     } else {
       core.setFailed('An unexpected error occurred');
     }
+  }
+}
+
+// v0.2.0: Post check run with inline PR annotations
+async function postCheckRunAnnotations(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  octokit: any,
+  owner: string,
+  repo: string,
+  headSha: string,
+  pullNumber: number,
+  issues: VibeReport['issues'],
+  score: number
+): Promise<void> {
+  try {
+    const annotations = issues.map(issue => ({
+      path: issue.file,
+      start_line: issue.line,
+      end_line: issue.line,
+      annotation_level: issue.severity === 'error'
+        ? 'failure' as const
+        : issue.severity === 'warning'
+        ? 'warning' as const
+        : 'notice' as const,
+      title: `VibeLint: ${issue.message}`,
+      message: issue.suggestion
+        ? `${issue.detail}\n\n💡 Suggestion: ${issue.suggestion}`
+        : issue.detail,
+    }));
+
+    // GitHub limits to 50 annotations per request
+    const chunks: typeof annotations[] = [];
+    for (let i = 0; i < annotations.length; i += 50) {
+      chunks.push(annotations.slice(i, i + 50));
+    }
+
+    const conclusion = score >= 70 ? 'success' : 'failure';
+    const summary = `VibeLint found ${issues.length} issue${issues.length !== 1 ? 's' : ''}. Vibe Score: ${score}/100`;
+
+    if (chunks.length === 0) {
+      // No issues — post clean check
+      await octokit.rest.checks.create({
+        owner,
+        repo,
+        name: 'VibeLint',
+        head_sha: headSha,
+        status: 'completed',
+        conclusion: 'success',
+        output: {
+          title: `Vibe Score: ${score}/100 ✅`,
+          summary: 'No AI code smells detected.',
+        },
+      });
+      return;
+    }
+
+    // Post first chunk with check creation
+    await octokit.rest.checks.create({
+      owner,
+      repo,
+      name: 'VibeLint',
+      head_sha: headSha,
+      status: 'completed',
+      conclusion,
+      output: {
+        title: `Vibe Score: ${score}/100`,
+        summary,
+        annotations: chunks[0],
+      },
+    });
+
+    // Update with remaining chunks if needed
+    // Note: additional annotations require check update (omitted for simplicity)
+    core.info(`📌 Posted ${chunks[0].length} inline annotations`);
+
+  } catch (err) {
+    // Annotation posting is best-effort — don't fail the whole action
+    core.warning(`Could not post inline annotations: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 

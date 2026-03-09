@@ -1,7 +1,7 @@
 // VibeLint — Empty/Tautological Test Detector
 // Detects tests that don't actually test anything
 
-import { CheckResult, Issue, DiffFile, Language } from '../types';
+import { CheckResult, Issue, DiffFile, Language, VibeLintConfig } from '../types';
 
 interface TestFunction {
   name: string;
@@ -50,6 +50,19 @@ const JS_TAUTOLOGICAL = [
   /assert\.strictEqual\s*\(\s*true\s*,\s*true\s*\)/,
 ];
 
+// Go tautological patterns
+const GO_TAUTOLOGICAL = [
+  /if\s+true\s*\{/,
+  /if\s+1\s*==\s*1\s*\{/,
+];
+
+// Rust tautological patterns
+const RUST_TAUTOLOGICAL = [
+  /assert!\s*\(\s*true\s*\)/,
+  /assert_eq!\s*\(\s*1\s*,\s*1\s*\)/,
+  /assert_eq!\s*\(\s*"[^"]*"\s*,\s*"[^"]*"\s*\)/,
+];
+
 // Assertion patterns (to check if they exist at all)
 const PYTHON_ASSERT_PATTERNS = [
   /\bassert\b/,
@@ -70,6 +83,26 @@ const JS_ASSERT_PATTERNS = [
   /\.toThrow/,
   /\.rejects/,
   /\.resolves/,
+];
+
+const GO_ASSERT_PATTERNS = [
+  /\bt\.Error\b/,
+  /\bt\.Errorf\b/,
+  /\bt\.Fatal\b/,
+  /\bt\.Fatalf\b/,
+  /\bt\.Fail\b/,
+  /\bt\.FailNow\b/,
+  /\btestify\/assert\b/,
+  /assert\.\w+\s*\(/,
+  /require\.\w+\s*\(/,
+];
+
+const RUST_ASSERT_PATTERNS = [
+  /\bassert!\s*\(/,
+  /\bassert_eq!\s*\(/,
+  /\bassert_ne!\s*\(/,
+  /\bassert_matches!\s*\(/,
+  /panic!\s*\(/,
 ];
 
 function extractPythonTestFunctions(content: string): TestFunction[] {
@@ -125,10 +158,6 @@ function extractJSTestFunctions(content: string): TestFunction[] {
   const lines = content.split('\n');
   const tests: TestFunction[] = [];
 
-  // Simple approach: find test()/it()/describe() blocks
-  // For MVP, we use a bracket-counting approach
-  const testStartPattern = /^\s*(?:test|it|describe)\s*\(\s*['"]/;
-
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
@@ -164,14 +193,121 @@ function extractJSTestFunctions(content: string): TestFunction[] {
   return tests;
 }
 
+// v0.2.0: Go test function extraction
+function extractGoTestFunctions(content: string): TestFunction[] {
+  const lines = content.split('\n');
+  const tests: TestFunction[] = [];
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    // func TestXxx(t *testing.T) {
+    const match = line.match(/^func\s+(Test\w+)\s*\(.*\*testing\.T\)/);
+
+    if (match) {
+      const name = match[1];
+      const startLine = i + 1;
+      let braceCount = 0;
+      let started = false;
+      const bodyLines: string[] = [];
+
+      for (let j = i; j < lines.length; j++) {
+        const l = lines[j];
+        for (const ch of l) {
+          if (ch === '{') { braceCount++; started = true; }
+          if (ch === '}') braceCount--;
+        }
+        bodyLines.push(l);
+        if (started && braceCount <= 0) {
+          i = j + 1;
+          break;
+        }
+      }
+
+      tests.push(buildTestFunction({ name, startLine, bodyLines }, 'go' as Language));
+      continue;
+    }
+    i++;
+  }
+
+  return tests;
+}
+
+// v0.2.0: Rust test function extraction
+function extractRustTestFunctions(content: string): TestFunction[] {
+  const lines = content.split('\n');
+  const tests: TestFunction[] = [];
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i].trim();
+
+    // #[test] followed by fn test_name()
+    if (line === '#[test]' || line.startsWith('#[test]')) {
+      // Next non-empty line should be the fn definition
+      let j = i + 1;
+      while (j < lines.length && lines[j].trim() === '') j++;
+      if (j < lines.length) {
+        const fnLine = lines[j].trim();
+        const fnMatch = fnLine.match(/fn\s+(\w+)\s*\(/);
+        if (fnMatch) {
+          const name = fnMatch[1];
+          const startLine = j + 1;
+          let braceCount = 0;
+          let started = false;
+          const bodyLines: string[] = [];
+
+          for (let k = j; k < lines.length; k++) {
+            const l = lines[k];
+            for (const ch of l) {
+              if (ch === '{') { braceCount++; started = true; }
+              if (ch === '}') braceCount--;
+            }
+            bodyLines.push(l);
+            if (started && braceCount <= 0) {
+              i = k + 1;
+              break;
+            }
+          }
+
+          tests.push(buildTestFunction({ name, startLine, bodyLines }, 'rust' as Language));
+          continue;
+        }
+      }
+    }
+    i++;
+  }
+
+  return tests;
+}
+
 function buildTestFunction(
   raw: { name: string; startLine: number; bodyLines: string[] },
-  language: 'python' | 'javascript' | 'typescript'
+  language: Language
 ): TestFunction {
   const body = raw.bodyLines.join('\n');
   const assertions: Assertion[] = [];
-  const assertPatterns = language === 'python' ? PYTHON_ASSERT_PATTERNS : JS_ASSERT_PATTERNS;
-  const tautPatterns = language === 'python' ? PYTHON_TAUTOLOGICAL : JS_TAUTOLOGICAL;
+
+  let assertPatterns: RegExp[];
+  let tautPatterns: RegExp[];
+
+  switch (language) {
+    case 'python':
+      assertPatterns = PYTHON_ASSERT_PATTERNS;
+      tautPatterns = PYTHON_TAUTOLOGICAL;
+      break;
+    case 'go':
+      assertPatterns = GO_ASSERT_PATTERNS;
+      tautPatterns = GO_TAUTOLOGICAL;
+      break;
+    case 'rust':
+      assertPatterns = RUST_ASSERT_PATTERNS;
+      tautPatterns = RUST_TAUTOLOGICAL;
+      break;
+    default:
+      assertPatterns = JS_ASSERT_PATTERNS;
+      tautPatterns = JS_TAUTOLOGICAL;
+  }
 
   for (let i = 0; i < raw.bodyLines.length; i++) {
     const line = raw.bodyLines[i].trim();
@@ -199,15 +335,43 @@ function buildTestFunction(
   };
 }
 
-export function checkTests(file: DiffFile, language: Language): CheckResult {
+function getSuggestion(testName: string, language: Language): string {
+  switch (language) {
+    case 'python':
+      return `Add an assertion like: \`self.assertEqual(${testName.replace('test_', '')}(), expected_value)\``;
+    case 'go':
+      return `Add a check like: \`if got != want { t.Errorf("got %v, want %v", got, want) }\``;
+    case 'rust':
+      return `Add an assertion like: \`assert_eq!(result, expected_value);\``;
+    default:
+      return `Add an assertion like: \`expect(result).toBe(expectedValue);\``;
+  }
+}
+
+export function checkTests(file: DiffFile, language: Language, config?: VibeLintConfig): CheckResult {
   const issues: Issue[] = [];
   const content = file.content || '';
 
   if (!content) return { issues };
 
-  const tests = language === 'python'
-    ? extractPythonTestFunctions(content)
-    : extractJSTestFunctions(content);
+  // Determine severity from config
+  const severity = config?.rules?.['empty-tests'] ?? 'warning';
+  if (severity === 'off') return { issues };
+
+  let tests: TestFunction[];
+  switch (language) {
+    case 'python':
+      tests = extractPythonTestFunctions(content);
+      break;
+    case 'go':
+      tests = extractGoTestFunctions(content);
+      break;
+    case 'rust':
+      tests = extractRustTestFunctions(content);
+      break;
+    default:
+      tests = extractJSTestFunctions(content);
+  }
 
   for (const test of tests) {
     // Check 1: No assertions at all
@@ -220,12 +384,13 @@ export function checkTests(file: DiffFile, language: Language): CheckResult {
 
       issues.push({
         type: 'empty-test',
-        severity: 'warning',
+        severity: severity as 'error' | 'warning' | 'info',
         file: file.filename,
         line: test.startLine,
         message: `Test '${test.name}' has no assertions`,
         detail: `This test function runs but never checks any results. It will always pass regardless of code behavior.`,
-        penalty: 10,
+        penalty: severity === 'error' ? 15 : severity === 'warning' ? 10 : 3,
+        suggestion: getSuggestion(test.name, language),
       });
     }
 
@@ -235,12 +400,13 @@ export function checkTests(file: DiffFile, language: Language): CheckResult {
       for (const taut of tautAssertions) {
         issues.push({
           type: 'tautological-test',
-          severity: 'warning',
+          severity: severity as 'error' | 'warning' | 'info',
           file: file.filename,
           line: taut.line,
           message: `Tautological assertion in '${test.name}'`,
           detail: `\`${taut.raw}\`\n→ ${taut.reason}`,
-          penalty: 10,
+          penalty: severity === 'error' ? 15 : 10,
+          suggestion: getSuggestion(test.name, language),
         });
       }
     } else {
@@ -254,6 +420,7 @@ export function checkTests(file: DiffFile, language: Language): CheckResult {
           message: `Tautological assertion in '${test.name}'`,
           detail: `\`${taut.raw}\`\n→ ${taut.reason}`,
           penalty: 5,
+          suggestion: getSuggestion(test.name, language),
         });
       }
     }

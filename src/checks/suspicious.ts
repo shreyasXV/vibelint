@@ -1,7 +1,7 @@
 // VibeLint — Suspicious Patterns Detector
 // Detects AI-generated code smells: TODOs, hardcoded secrets, empty catches, console.logs
 
-import { CheckResult, Issue, DiffFile, Language } from '../types';
+import { CheckResult, Issue, DiffFile, Language, VibeLintConfig } from '../types';
 
 // Hardcoded secret patterns
 const SECRET_PATTERNS = [
@@ -41,16 +41,20 @@ const CONSOLE_LOG_PATTERNS = [
   /System\.out\.println/,
 ];
 
-export function checkSuspicious(file: DiffFile, language: Language): CheckResult {
+export function checkSuspicious(file: DiffFile, language: Language, config?: VibeLintConfig): CheckResult {
   const issues: Issue[] = [];
   const content = file.content || '';
   const patch = file.patch || '';
 
   if (!content && !patch) return { issues };
 
+  // Determine severity from config
+  const severity = config?.rules?.suspicious ?? 'warning';
+  if (severity === 'off') return { issues };
+
   // We only check ADDED lines from the diff if available, otherwise full content
   const linesToCheck: { text: string; lineNum: number }[] = [];
-  
+
   if (patch) {
     const patchLines = patch.split('\n');
     let currentLine = 0;
@@ -75,7 +79,7 @@ export function checkSuspicious(file: DiffFile, language: Language): CheckResult
 
   for (const { text, lineNum } of linesToCheck) {
     const trimmed = text.trim();
-    
+
     // Skip empty lines and pure comments that are just file headers
     if (!trimmed) continue;
 
@@ -90,13 +94,14 @@ export function checkSuspicious(file: DiffFile, language: Language): CheckResult
         if (file.filename.includes('.example') || file.filename.includes('.sample')) continue;
 
         issues.push({
-          type: 'hallucination', // reuse type for now, will add 'secret' type
+          type: 'suspicious',
           severity: 'error',
           file: file.filename,
           line: lineNum,
           message: `Possible hardcoded ${pattern.label} detected`,
           detail: `Line contains what appears to be a hardcoded ${pattern.label}. Consider using environment variables instead.`,
           penalty: 15,
+          suggestion: `Replace with an environment variable: \`process.env.${pattern.label.toUpperCase().replace(/[/ ]/g, '_')}\` or use a secrets manager.`,
         });
         break; // One match per line is enough
       }
@@ -106,18 +111,23 @@ export function checkSuspicious(file: DiffFile, language: Language): CheckResult
     for (const pattern of TODO_PATTERNS) {
       if (pattern.test(trimmed)) {
         // Only flag if it's in a comment
-        const isComment = trimmed.startsWith('#') || trimmed.startsWith('//') || 
+        const isComment = trimmed.startsWith('#') || trimmed.startsWith('//') ||
                          trimmed.startsWith('*') || trimmed.startsWith('/*');
-        if (isComment || /\/\/.*\b(TODO|FIXME|HACK|XXX)\b/i.test(trimmed) || 
+        if (isComment || /\/\/.*\b(TODO|FIXME|HACK|XXX)\b/i.test(trimmed) ||
             /#.*\b(TODO|FIXME|HACK|XXX)\b/i.test(trimmed)) {
+
+          const todoMatch = trimmed.match(/\b(TODO|FIXME|HACK|XXX)\b/i);
+          const kind = todoMatch ? todoMatch[1].toUpperCase() : 'TODO';
+
           issues.push({
-            type: 'empty-test', // reuse for now
+            type: 'suspicious',
             severity: 'info',
             file: file.filename,
             line: lineNum,
-            message: 'TODO/FIXME comment in new code',
-            detail: `\`${trimmed.slice(0, 80)}\`\n→ AI-generated code often includes placeholder TODOs. Consider resolving before merging.`,
+            message: `TODO/FIXME comment in new code`,
+            detail: `\`${trimmed.slice(0, 80)}\`\n→ AI-generated code often includes placeholder ${kind}s. Consider resolving before merging.`,
             penalty: 3,
+            suggestion: `Resolve this ${kind} before merging: implement the intended logic or remove the placeholder comment.`,
           });
         }
         break;
@@ -129,13 +139,16 @@ export function checkSuspicious(file: DiffFile, language: Language): CheckResult
     for (const pattern of catchPatterns) {
       if (pattern.test(trimmed)) {
         issues.push({
-          type: 'removed-code', // reuse for now
-          severity: 'warning',
+          type: 'suspicious',
+          severity: severity as 'error' | 'warning' | 'info',
           file: file.filename,
           line: lineNum,
           message: 'Empty error handler — errors are silently swallowed',
           detail: `\`${trimmed.slice(0, 80)}\`\n→ Silently catching errors hides bugs. At minimum, log the error.`,
-          penalty: 10,
+          penalty: severity === 'error' ? 15 : severity === 'warning' ? 10 : 3,
+          suggestion: language === 'python'
+            ? `Add error logging: \`except Exception as e:\\n    logger.error("Unexpected error: %s", e)\``
+            : `Add error logging: \`catch (err) { console.error('Unexpected error:', err); }\``,
         });
         break;
       }
@@ -148,15 +161,40 @@ export function checkSuspicious(file: DiffFile, language: Language): CheckResult
           // Skip if it's in a logging utility file
           if (file.filename.includes('log') || file.filename.includes('debug')) continue;
           issues.push({
-            type: 'empty-test',
+            type: 'suspicious',
             severity: 'info',
             file: file.filename,
             line: lineNum,
             message: 'Debug logging left in code',
             detail: `\`${trimmed.slice(0, 80)}\`\n→ Consider removing debug output before merging.`,
             penalty: 2,
+            suggestion: `Remove this debug statement or replace with a proper logger (e.g., \`logger.debug(...)\`).`,
           });
           break;
+        }
+      }
+    }
+
+    // v0.2.0: Custom rules from config
+    if (config?.['custom-rules']) {
+      for (const rule of config['custom-rules']) {
+        try {
+          const regex = new RegExp(rule.pattern, 'i');
+          if (regex.test(trimmed)) {
+            issues.push({
+              type: 'custom',
+              severity: rule.severity,
+              file: file.filename,
+              line: lineNum,
+              message: rule.message,
+              detail: `\`${trimmed.slice(0, 80)}\`\n→ Matched custom rule pattern: \`${rule.pattern}\``,
+              penalty: rule.severity === 'error' ? 10 : rule.severity === 'warning' ? 5 : 2,
+              suggestion: `Review and address the pattern matching: \`${rule.pattern}\``,
+            });
+            break; // One custom rule match per line
+          }
+        } catch {
+          // Invalid regex in custom rule — skip
         }
       }
     }
