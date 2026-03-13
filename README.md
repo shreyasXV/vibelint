@@ -2,9 +2,23 @@
 
 **Your AI writes code. VibeLint makes sure it works.**
 
-A GitHub Action that catches the bugs your AI coding tools introduce — hallucinated imports, empty tests, tautological assertions, deleted-but-still-referenced code, and more.
+A GitHub Action + CLI that catches the bugs your AI coding tools introduce — hallucinated imports, empty tests, tautological assertions, deleted-but-still-referenced code, and more. Now with an **AI Critic Gate** for deep semantic analysis.
 
 ## Quick Start
+
+### CLI (fastest way to try)
+
+```bash
+npx vibelint scan .
+```
+
+Or install globally:
+```bash
+npm install -g vibelint
+vibelint scan ./src --fail-below 70
+```
+
+### GitHub Action
 
 Add to `.github/workflows/vibelint.yml`:
 
@@ -21,10 +35,22 @@ jobs:
       checks: write
     steps:
       - uses: actions/checkout@v4
-      - uses: shreyasXV/vibelint@v0.2.0
+      - uses: shreyasXV/vibelint@v0.3.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           fail-below: 70
+```
+
+#### With AI Critic Gate (Pro)
+
+```yaml
+      - uses: shreyasXV/vibelint@v0.3.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fail-below: 70
+          ai-critic: true
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 ```
 
 ## What It Catches
@@ -63,11 +89,42 @@ Deleted `rate_limit_check()` but it's still called in app.py:42, middleware.py:1
 ### ⚠️ Suspicious Patterns
 Hardcoded secrets, empty catch blocks, TODO/FIXME comments, debug logs left in production.
 
-## v0.2.0 — New Features
+### 🧠 AI Critic Gate (v0.3.0)
+LLM-powered deep analysis that catches what static checks can't:
+- **Hallucinated APIs** — methods that don't exist in the library version
+- **Subtle logic errors** — off-by-one, inverted conditions, wrong variables
+- **Incomplete implementations** — hardcoded returns, placeholder code
+- **Security vulnerabilities** — SQL injection, XSS, path traversal
+- **Type confusion** — wrong types, unsafe assertions
+- **Async bugs** — missing await, swallowed errors
+- **Copy-paste artifacts** — forgotten variable name updates
 
-### 📋 Config File (`.vibelint.yml`)
+## CLI Usage
 
-Create `.vibelint.yml` in your repo root to customize behavior:
+```bash
+# Scan current directory
+vibelint scan .
+
+# Scan with threshold (exit 1 if below)
+vibelint scan ./src --fail-below 70
+
+# Enable AI Critic
+OPENAI_API_KEY=sk-... vibelint scan . --ai-critic
+
+# Use Anthropic
+ANTHROPIC_API_KEY=sk-ant-... vibelint scan . --ai-critic
+
+# JSON output (for CI)
+vibelint scan . --format json
+
+# SARIF output (for GitHub Code Scanning)
+vibelint scan . --format sarif
+
+# Create config file
+vibelint init
+```
+
+## Configuration (`.vibelint.yml`)
 
 ```yaml
 fail-below: 70
@@ -85,40 +142,35 @@ custom-rules:
     message: "AI left a FIXME/HACK comment"
 ```
 
-### 🔧 Auto-fix Suggestions
-
-Every issue now includes a concrete suggestion:
-- Hallucinated import → exact install command
-- Empty test → example assertion for the language  
-- Removed code → list of files to update
-
-### 🦀🐹 Go & Rust Support
-
-VibeLint now checks Go (`.go`) and Rust (`.rs`) files:
-- Parses `go.mod` and `Cargo.toml` for declared dependencies
-- Detects hallucinated `import "github.com/..."` and `use fake_crate::`
-- Identifies empty `func TestXxx(t *testing.T)` and `#[test]` functions
-
-### 📌 Inline PR Annotations
-
-In addition to the PR summary comment, VibeLint posts a GitHub Check Run with inline annotations on the exact lines with issues.
-
-## Configuration
-
-| Input | Description | Default |
-|-------|-------------|---------|
-| `github-token` | GitHub token for PR comments & checks | `${{ github.token }}` |
-| `fail-below` | Fail check if score < threshold (0 = disabled) | `0` |
-| `languages` | Languages to check | `python,javascript,typescript,go,rust` |
-| `config` | Path to config file | `.vibelint.yml` |
-
 ## Vibe Score
 
-Every PR gets a score from 0-100:
+Every scan gets a score from 0-100:
 - ✅ **90-100** — Clean
 - ⚠️ **70-89** — Review Suggested
 - 🟡 **50-69** — Concerning
 - 🔴 **0-49** — Needs Human Review
+
+## Supported Languages
+
+| Language | Dependency File | Import Detection | Test Detection |
+|----------|----------------|-----------------|----------------|
+| Python | `requirements.txt`, `pyproject.toml` | ✅ | ✅ |
+| JavaScript | `package.json` | ✅ | ✅ |
+| TypeScript | `package.json` | ✅ | ✅ |
+| Go | `go.mod` | ✅ | ✅ |
+| Rust | `Cargo.toml` | ✅ | ✅ |
+
+## AI Critic — API Keys
+
+The AI Critic gate supports multiple providers:
+
+| Provider | Env Variable | Default Model |
+|----------|-------------|---------------|
+| OpenAI | `OPENAI_API_KEY` | `gpt-4o-mini` |
+| Anthropic | `ANTHROPIC_API_KEY` | `claude-sonnet-4-20250514` |
+| Custom | `VIBELINT_API_KEY` + `VIBELINT_BASE_URL` | Any OpenAI-compatible |
+
+Set `VIBELINT_MODEL` to override the model.
 
 ## Changelog
 

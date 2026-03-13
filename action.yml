@@ -22,6 +22,14 @@ inputs:
     description: 'Path to VibeLint config file (default: .vibelint.yml)'
     required: false
     default: '.vibelint.yml'
+  ai-critic:
+    description: 'Enable AI Critic gate (requires OPENAI_API_KEY or ANTHROPIC_API_KEY secret)'
+    required: false
+    default: 'false'
+  ai-critic-model:
+    description: 'LLM model for AI Critic (default: gpt-4o-mini)'
+    required: false
+    default: ''
 
 runs:
   using: 'node20'

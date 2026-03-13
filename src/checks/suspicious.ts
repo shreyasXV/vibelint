@@ -110,9 +110,13 @@ export function checkSuspicious(file: DiffFile, language: Language, config?: Vib
     // Check for TODO/FIXME in new code
     for (const pattern of TODO_PATTERNS) {
       if (pattern.test(trimmed)) {
-        // Only flag if it's in a comment
+        // Only flag if it's in a comment (not in a regex pattern definition or string)
         const isComment = trimmed.startsWith('#') || trimmed.startsWith('//') ||
                          trimmed.startsWith('*') || trimmed.startsWith('/*');
+        // Skip lines that define regex patterns containing TODO/FIXME (e.g., linter rule definitions)
+        const isPatternDef = /\/.*TODO.*\/|RegExp\(|new RegExp|pattern.*[:=]|regex.*[:=]/i.test(trimmed);
+        if (isPatternDef) break;
+
         if (isComment || /\/\/.*\b(TODO|FIXME|HACK|XXX)\b/i.test(trimmed) ||
             /#.*\b(TODO|FIXME|HACK|XXX)\b/i.test(trimmed)) {
 
@@ -158,8 +162,9 @@ export function checkSuspicious(file: DiffFile, language: Language, config?: Vib
     if (!file.filename.includes('test') && !file.filename.includes('spec')) {
       for (const pattern of CONSOLE_LOG_PATTERNS) {
         if (pattern.test(trimmed)) {
-          // Skip if it's in a logging utility file
+          // Skip if it's in a logging utility file or a CLI tool (CLI tools are SUPPOSED to print)
           if (file.filename.includes('log') || file.filename.includes('debug')) continue;
+          if (file.filename.includes('cli') || file.filename.includes('bin/')) continue;
           issues.push({
             type: 'suspicious',
             severity: 'info',

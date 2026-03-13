@@ -1,45 +1,54 @@
 # Changelog
 
-All notable changes to VibeLint will be documented in this file.
+## v0.3.0 — AI Critic Gate + CLI (2026-03-13)
 
-## [0.2.0] - 2026-03-09
+### 🧠 AI Critic Gate (NEW)
+- LLM-powered semantic code review that catches what static analysis can't
+- Detects: hallucinated APIs, subtle logic errors, incomplete implementations, security vulns, type confusion, async bugs, copy-paste artifacts
+- Supports OpenAI, Anthropic (Claude), and any OpenAI-compatible endpoint
+- Configurable via env vars: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `VIBELINT_API_KEY`
+- Custom model selection via `VIBELINT_MODEL` env var
+- Best-effort: failures don't block the scan
+- GitHub Action: `ai-critic: true` input
+- CLI: `--ai-critic` flag
 
-### Added
+### 🖥️ CLI Tool (NEW)
+- `npx vibelint scan [path]` — scan local code without GitHub
+- `vibelint init` — create `.vibelint.yml` config
+- Beautiful terminal output with colors, progress bar, score
+- JSON output: `--format json` (for CI pipelines)
+- SARIF output: `--format sarif` (for GitHub Code Scanning)
+- `--fail-below <score>` — exit code 1 if below threshold
+- Auto-discovers project root (walks up to find package.json/requirements.txt)
 
-- **Config file support** (`.vibelint.yml`): Customize VibeLint behavior via a YAML config file in your repo root
-  - Set `fail-below` threshold
-  - Ignore paths with glob patterns (`vendor/**`, `generated/**`)
-  - Override rule severities (`error`, `warning`, `info`, `off`)
-  - Define custom pattern rules with regex
-- **Auto-fix suggestions**: Every issue now includes a `suggestion` field with a concrete fix recommendation
-  - Hallucinated import → install command or removal hint
-  - Empty test → example assertion for the language
-  - Removed code → list of files to update
-  - Suspicious pattern → specific remediation advice
-- **Go language support**: Detects hallucinated imports in `.go` files, parses `go.mod`, detects empty `*testing.T` test functions
-- **Rust language support**: Detects hallucinated `use`/`extern crate` in `.rs` files, parses `Cargo.toml`, detects empty `#[test]` functions
-- **Inline PR annotations**: Posts a GitHub Check Run with per-line annotations on exact lines, in addition to the summary PR comment
-- **`config` action input**: Specify a custom config file path (default: `.vibelint.yml`)
+### 🛠️ Improvements
+- Import checkers now skip comment lines (reduces false positives)
+- Suspicious patterns skip CLI/bin files for console.log checks
+- TODO/FIXME checker skips regex pattern definitions
+- Package published with `bin` field — `npx vibelint` just works
+- SARIF output for GitHub Advanced Security integration
 
-### Changed
-
-- `languages` default now includes `go` and `rust`
-- PR comment version badge updated to `v0.2.0`
-- Issue types expanded: `suspicious` and `custom` are now first-class types (was re-using `empty-test`/`removed-code`)
-- Penalty values respect configured severity overrides
-
-### Fixed
-
-- Backward compatible: repos without `.vibelint.yml` work exactly as before
-
-## [0.1.0] - 2026-02-15
+## v0.2.0 — Config File, Go/Rust, Auto-fix (2026-03-09)
 
 ### Added
+- **Config file** (`.vibelint.yml`) — customize rules, ignore paths, set thresholds
+- **Go & Rust support** — checks `go.mod` and `Cargo.toml` dependencies
+- **Auto-fix suggestions** — every issue now includes a concrete fix
+- **Inline PR annotations** — GitHub Check Run with line-by-line annotations
+- **Custom rules** — define your own pattern-matching rules in config
+- **Severity overrides** — set rules to error/warning/info/off
 
-- Initial release
-- Hallucination detection for Python, JavaScript, TypeScript
+### Improved
+- Better test detection for Go (`_test.go`) and Rust (`#[test]`)
+- Pyproject.toml parsing for Python dependencies
+- Report formatting with collapsible file sections
+
+## v0.1.0 — MVP (2026-03-06)
+
+### Added
+- Hallucinated import detection (Python, JS/TS)
 - Empty/tautological test detection
-- Removed code (dead reference) detection
-- Suspicious pattern detection (hardcoded secrets, TODO/FIXME, empty catches, debug logs)
-- GitHub PR comment with Vibe Score (0–100)
-- `fail-below` threshold support
+- Removed code still referenced detection
+- Suspicious patterns (secrets, empty catches, debug logs, TODOs)
+- Vibe Score (0-100)
+- GitHub Action with PR comments

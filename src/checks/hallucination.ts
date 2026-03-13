@@ -85,6 +85,9 @@ export function extractPythonImports(content: string): ImportInfo[] {
     const line = lines[i].trim();
     const lineNum = i + 1;
 
+    // Skip comments
+    if (line.startsWith('#')) continue;
+
     // import foo / import foo.bar / import foo as f
     const importMatch = line.match(/^import\s+([\w.]+)/);
     if (importMatch) {
@@ -112,6 +115,9 @@ export function extractJSImports(content: string): ImportInfo[] {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     const lineNum = i + 1;
+
+    // Skip comments
+    if (line.startsWith('//') || line.startsWith('*') || line.startsWith('/*')) continue;
 
     // import ... from 'package'
     const esImport = line.match(/(?:import|export)\s+.*?from\s+['"]([^'"]+)['"]/);

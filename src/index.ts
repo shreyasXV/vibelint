@@ -10,6 +10,7 @@ import { checkRemovedCode } from './checks/removed-code';
 import { checkSuspicious } from './checks/suspicious';
 import { calculateScore, formatReport } from './scoring';
 import { loadConfig, loadConfigFromContent } from './config';
+import { checkWithAICritic, resolveAICriticOptions } from './checks/ai-critic';
 
 async function run(): Promise<void> {
   try {
@@ -17,6 +18,8 @@ async function run(): Promise<void> {
     const failBelowInput = core.getInput('fail-below') || '0';
     const languagesInput = core.getInput('languages') || 'python,javascript,typescript,go,rust';
     const configPath = core.getInput('config') || '.vibelint.yml';
+    const aiCriticEnabled = core.getInput('ai-critic') === 'true';
+    const aiCriticModel = core.getInput('ai-critic-model') || '';
     const enabledLanguages = new Set(languagesInput.split(',').map(l => l.trim().toLowerCase()));
 
     const octokit = github.getOctokit(token);
@@ -164,6 +167,29 @@ async function run(): Promise<void> {
       if (file.status === 'modified' && file.patch) {
         const removedResult = checkRemovedCode(diffFile, allFileContents, config);
         allIssues.push(...removedResult.issues);
+      }
+    }
+
+    // v0.3.0: AI Critic Gate
+    if (aiCriticEnabled) {
+      const aiOptions = resolveAICriticOptions(config);
+      if (aiOptions) {
+        if (aiCriticModel) aiOptions.model = aiCriticModel;
+        core.info('🧠 Running AI Critic gate...');
+
+        const aiCriticFiles = Array.from(allFileContents.entries())
+          .map(([filename, content]) => ({
+            filename,
+            content,
+            language: detectLanguage(filename)!,
+          }))
+          .filter(f => f.language);
+
+        const aiResult = await checkWithAICritic(aiCriticFiles, aiOptions, config);
+        allIssues.push(...aiResult.issues);
+        core.info(`🧠 AI Critic found ${aiResult.issues.length} additional issues`);
+      } else {
+        core.warning('AI Critic enabled but no API key found. Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or VIBELINT_API_KEY as a secret.');
       }
     }
 

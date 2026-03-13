@@ -1,7 +1,7 @@
 // VibeLint — Types
 
 export interface Issue {
-  type: 'hallucination' | 'empty-test' | 'tautological-test' | 'disconnected-test' | 'removed-code' | 'suspicious' | 'custom';
+  type: 'hallucination' | 'empty-test' | 'tautological-test' | 'disconnected-test' | 'removed-code' | 'suspicious' | 'custom' | 'ai-critic';
   severity: 'error' | 'warning' | 'info';
   file: string;
   line: number;
