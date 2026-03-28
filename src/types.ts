@@ -1,7 +1,7 @@
 // VibeLint — Types
 
 export interface Issue {
-  type: 'hallucination' | 'empty-test' | 'tautological-test' | 'disconnected-test' | 'removed-code' | 'suspicious' | 'custom' | 'ai-critic';
+  type: 'hallucination' | 'empty-test' | 'tautological-test' | 'disconnected-test' | 'removed-code' | 'suspicious' | 'custom' | 'ai-critic' | 'slop-comments';
   severity: 'error' | 'warning' | 'info';
   file: string;
   line: number;
@@ -46,6 +46,7 @@ export interface VibeLintConfig {
     'empty-tests'?: 'error' | 'warning' | 'info' | 'off';
     'removed-code'?: 'error' | 'warning' | 'info' | 'off';
     suspicious?: 'error' | 'warning' | 'info' | 'off';
+    'slop-comments'?: 'error' | 'warning' | 'info' | 'off';
   };
   'custom-rules'?: CustomRule[];
 }

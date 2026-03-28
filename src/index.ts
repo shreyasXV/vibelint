@@ -8,6 +8,7 @@ import { checkHallucinations, parsePackageJson, parsePythonDeps, parsePyprojectT
 import { checkTests } from './checks/empty-tests';
 import { checkRemovedCode } from './checks/removed-code';
 import { checkSuspicious } from './checks/suspicious';
+import { checkSlopComments } from './checks/slop-comments';
 import { calculateScore, formatReport } from './scoring';
 import { loadConfig, loadConfigFromContent } from './config';
 import { checkWithAICritic, resolveAICriticOptions } from './checks/ai-critic';
@@ -162,6 +163,10 @@ async function run(): Promise<void> {
       // Run suspicious patterns check on all files
       const suspiciousResult = checkSuspicious(diffFile, language, config);
       allIssues.push(...suspiciousResult.issues);
+
+      // Run slop comments check on all files
+      const slopResult = checkSlopComments(diffFile, language, config);
+      allIssues.push(...slopResult.issues);
 
       // Run removed code check on modified files
       if (file.status === 'modified' && file.patch) {

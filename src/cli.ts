@@ -9,6 +9,7 @@ import { DiffFile, Language, Issue, VibeReport, VibeLintConfig, detectLanguage, 
 import { checkHallucinations, parsePackageJson, parsePythonDeps, parsePyprojectToml, parseGoMod, parseCargoToml } from './checks/hallucination';
 import { checkTests } from './checks/empty-tests';
 import { checkSuspicious } from './checks/suspicious';
+import { checkSlopComments } from './checks/slop-comments';
 import { calculateScore } from './scoring';
 import { loadConfig } from './config';
 import { checkWithAICritic, resolveAICriticOptions, AICriticOptions } from './checks/ai-critic';
@@ -162,6 +163,7 @@ function formatSARIF(report: VibeReport): string {
             { id: 'empty-test', shortDescription: { text: 'Empty/Tautological Test' } },
             { id: 'removed-code', shortDescription: { text: 'Removed Code Still Referenced' } },
             { id: 'suspicious', shortDescription: { text: 'Suspicious Pattern' } },
+            { id: 'slop-comments', shortDescription: { text: 'AI Slop Comment' } },
           ],
         },
       },
@@ -265,6 +267,10 @@ async function scanCommand(scanPath: string, options: {
     const suspiciousResult = checkSuspicious(diffFile, language, config);
     allIssues.push(...suspiciousResult.issues);
 
+    // Slop comments
+    const slopResult = checkSlopComments(diffFile, language, config);
+    allIssues.push(...slopResult.issues);
+
     // Collect for AI Critic
     if (options.aiCritic) {
       aiCriticFiles.push({ filename: relativePath, content, language });
@@ -364,6 +370,7 @@ rules:
   empty-tests: warning
   removed-code: warning
   suspicious: warning
+  slop-comments: warning
 
 # Custom pattern rules
 # custom-rules:
